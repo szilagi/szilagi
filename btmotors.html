@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en-US">
+<head>
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta charset="UTF-8"> 
+	<title>BLT test</title>
+	<style>
+		div { text-align: center; }
+		div:first-of-type { margin: 1em; }
+		div.row { margin:auto; display:flex; flex-direction:row; justify-content:center; }
+		div.row label { display:flex; flex-direction:column; }
+		div.row label span { font-size:.85em; text-align: center; display:none; }
+		div.row:nth-child(4n+1) label span { display:inline; text-align:center; }
+		input { margin:.3em; padding:.3em; }
+		input[type=text] { width:2em; }
+		input[type=number] { width:3em; }
+		input[type=checkbox] { width:1em; }
+		button { margin:.5em; padding:.3em; }
+		.bred { color: red; }
+		.bgreen { color: green; }
+	</style>
+</head>
+<body>
+	<dialog id="Dialog">
+		<button id="btnClose" autofocus>Close</button>
+		<p id="Message"></p>
+	</dialog>
+
+	<div>
+		<input type="hidden" id="txtPrefix" value="Szilagi">
+		<button id="btnConnect">Connect</button>
+		<button id="btnTest">Test</button>
+		<button id="btnRead">Read</button>		
+		<button id="btnStart">Start</button>
+		<button id="btnStop">Stop</button>
+		<input type="checkbox" id="selectAll">
+	</div>
+
+	<div id="mtrs"></div>
+
+	<script>
+		var charistic;
+
+		const log = text => {
+			console.log(text);
+			Message.innerText = text;
+			Dialog.showModal();			
+		};
+
+		const send = (cmd, cmds) => {
+			let msg = [cmd];
+			if (Array.isArray(cmds))
+				for (let i=0;i<Math.min(7,cmds.length);i++)
+					msg.push(parseInt(cmds[i]));
+			else
+				msg.push(parseInt(cmds));
+
+			while(msg.length<10)
+				msg.push(255);
+
+			let arr = new Uint8Array(msg);
+			console.log(arr);
+			charistic?.writeValue(arr).catch(e => log(e));
+		}
+
+		const putVal = (ind, val) => {
+			let el = document.getElementById(ind);
+			changed = false;
+			if (el.type == 'checkbox') {
+				if (el.checked !== val) {
+					el.checked = val;
+					changed = true;
+				}
+			} else if (el.value !== ''+val) {
+				el.value = val;
+				changed = true;
+			}
+			if (changed) {
+				el.style.color = 'red';
+				setTimeout(()=>{ el.style.color='inherit' },2000);
+			}
+		};
+
+		const charisticChanged = val => {
+			if (!val.buffer.byteLength) return;
+			if (val.buffer.byteLength>0) {
+				ind = val.getUint8(0); // mtr_ind
+				if (1<=ind && ind<=8 && val.buffer.byteLength>6) {
+					putVal('mins_'+ind,  val.getUint8(1));
+					putVal('hours_'+ind, val.getUint8(2));
+					putVal('delay_'+ind, val.getUint8(3));
+					putVal('start_'+ind, val.getUint8(4));
+					putVal('over_'+ind, val.getUint8(5));
+					putVal('run_' + ind, val.getUint8(6)>0);
+				} else if (ind==99) { // accept commands message
+					log('accepting commands');
+				} else { // test
+					let strVal = "";
+					for(let i=0;i<val.buffer.byteLength;i++)
+						strVal += val.getUint8(i) + " ";
+					log(strVal);				
+				}
+			}
+		};
+
+		const editSaveBtnClicked = (ev) => {
+			let mtrdiv = ev.target.closest('div.row');
+			if (!mtrdiv) { log('save btn not inside proper div'); return; }
+			let mins = mtrdiv.querySelector('.mins');
+			let hours = mtrdiv.querySelector('.hours');
+			let delay = mtrdiv.querySelector('.delay');
+			if (mins&&hours&&delay) {
+				if (ev.target.innerText == 'edit') {
+					mins.disabled=hours.disabled=delay.disabled=false;
+					ev.target.innerText = 'save';
+				} else if (ev.target.innerText == 'save') {
+					send(22, [mtrdiv.mtrind, mins.value, hours.value, delay.value]);
+					mins.disabled=hours.disabled=delay.disabled=true;
+					ev.target.innerText = 'edit';
+				}
+			} else
+				log('mins or hours or delay not proper');
+		}
+
+		const getSelected = () => {
+			let ind=1;
+			let sum=0;
+			mtrs.querySelectorAll('.sel').forEach(sel => {
+				if (sel.checked) sum+=1<<(8-ind);
+				ind++;
+			});
+			return sum;
+		}
+
+		btnConnect.addEventListener('click', async (ev) => {
+			if (!mtrs.querySelectorAll('.row').length)
+				for (let i=1;i<=8;i++)
+					mtrs.appendChild(createTxtRow(i));
+			try {
+				const device = await navigator.bluetooth.requestDevice({
+					filters: [{ namePrefix: txtPrefix.value }], // acceptAllDevices: true,
+					optionalServices: ['0000ffe0-0000-1000-8000-00805f9b34fb']
+				});
+				device.addEventListener('gattserverdisconnected', ev =>	{
+					btnConnect.classList.remove('bgreen');
+					btnConnect.classList.add('bred');
+				});
+				const server = await device.gatt.connect();
+				const service = await server.getPrimaryService('0000ffe0-0000-1000-8000-00805f9b34fb');
+				charistic = await service.getCharacteristic('0000ffe1-0000-1000-8000-00805f9b34fb');
+				charistic.addEventListener('characteristicvaluechanged', ev => charisticChanged(ev.target.value));
+				charistic.startNotifications();
+				btnConnect.classList.add('bgreen');
+			} catch (e) {
+				charistic = null;
+				btnConnect.classList.remove('bgreen');
+				btnConnect.classList.add('bred');
+				log(e);
+			}
+		});
+
+		btnRead.addEventListener('click', ev => {
+			if (confirm('sure?')) {
+				mtrs.querySelectorAll('.row input[type=text], .row input[type=number]').forEach(el=>el.value='');
+				mtrs.querySelectorAll('.row .run').forEach(el=>el.checked=false);
+				for (let ind=1;ind<=8;ind++)
+					setTimeout(() => send(11, ind), (ind-1)*1000);
+			}
+		});
+
+		btnTest.addEventListener('click', ev => send(0, [1,2,3,4,5]));
+
+		btnClose.addEventListener('click', ev => Dialog.close());
+
+		btnStop.addEventListener('click', ev => {
+			if (confirm('sure?')) send(33,getSelected());
+		});
+		btnStart.addEventListener('click', ev => {
+			if (confirm('sure?')) send(44,getSelected());
+		});
+
+		selectAll.addEventListener('change', ev => {
+			mtrs.querySelectorAll('.sel').forEach(el=>el.checked=ev.target.checked)
+		})
+
+		const createTxtRow = ind => {
+			let div = document.createElement('div');
+			div.id = 'row_' + ind;
+			div.classList.add('row');
+			div.mtrind = ind;
+			div.appendChild(createNrInp('mins',ind));
+			div.appendChild(createNrInp('hours',ind));
+			div.appendChild(createNrInp('delay',ind));
+			div.appendChild(createEditSaveBtn('cmd', editSaveBtnClicked));
+			div.appendChild(createTxtInp('start',ind));
+			div.appendChild(createTxtInp('over',ind));
+			div.appendChild(createChckInp('run',ind));
+			div.appendChild(createChckInp('sel',ind, false));
+			return div;
+		};
+
+		const createLabel = elmnt => {
+			let label = document.createElement('label');
+			label.innerHTML = '<span>' + elmnt.grp + '</span>';
+			label.for = elmnt.id;
+			label.appendChild(elmnt);
+			label.grp = elmnt.grp;
+			return label;
+		};
+
+		const createNrInp = (cname, id, min=0, max=240) => {
+			let inp = document.createElement('input');
+			inp.id = cname + '_' + id;
+			inp.type = 'number';
+			inp.min = min;
+			inp.max = max;
+			inp.grp = cname;
+			inp.disabled = true;
+			inp.classList.add(cname);
+			return createLabel(inp);
+		};
+
+		const createTxtInp = (cname, id) => {
+			let inp = document.createElement('input');
+			inp.id = cname + '_' + id;
+			inp.type = 'text';
+			inp.grp = cname;
+			inp.disabled = true;
+			inp.classList.add(cname);
+			return createLabel(inp);
+		};
+
+		const createChckInp = (cname, id, disabled=true) => {
+			let inp = document.createElement('input');
+			inp.id = cname + '_' + id;
+			inp.type = 'checkbox';
+			inp.classList.add(cname);
+			inp.grp = cname;
+			inp.disabled = disabled;
+			return createLabel(inp);
+		};
+
+		const createEditSaveBtn = (cname, clicked) => {
+			let btn = document.createElement('button');
+			btn.innerText = 'edit';
+			btn.classList.add(cname);
+			btn.grp = cname;
+			btn.addEventListener('click', clicked);
+			return createLabel(btn);
+		};
+	</script>
+</body>
+</html>
